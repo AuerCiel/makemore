@@ -11,6 +11,9 @@ Changes from minGPT:
   and are not weight decayed. I don't believe this should make a massive
   difference at the scale that we operate on here.
 """
+#文件总述：
+#（1）下面的Transformer，Bigram，MLP，RNN，GRU，BoW这几个class都是语言模型的实现，都是继承自nn.Module的子类
+
 
 import os
 import sys
