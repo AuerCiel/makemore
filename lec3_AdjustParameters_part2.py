@@ -25,6 +25,7 @@
 #=========================cover一些part1的细节还有内容总结========================
 # Let's train a deeper network
 # The classes we create here are the same API as nn.Module in PyTorch
+import sys
 import torch
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
@@ -47,7 +48,7 @@ print(itos)
 print(vocab_size)
 
 
-block_size = 3 # 也就是上下文长度：读入多少个上文，来预测下一个char
+block_size = 4 # 也就是上下文长度：读入多少个上文，来预测下一个char
 def build_dataset(words):  
   X, Y = [], []
   
@@ -154,8 +155,8 @@ class Tanh:
 
 
 #======================================开始训练=======================================
-n_embd = 10 # the dimensionality of the character embedding vectors
-n_hidden = 100 # the number of neurons in the hidden layer of the MLP
+n_embd = 30 # the dimensionality of the character embedding vectors
+n_hidden = 1000 # the number of neurons in the hidden layer of the MLP
 g = torch.Generator().manual_seed(2147483647) # for reproducibility
 
 #（1）初始化layers，和特殊的嵌入矩阵C
@@ -203,7 +204,7 @@ for p in parameters:
 
 # same optimization as last time
 max_steps = 200000  #最大训练次数
-batch_size = 32     #每一次任意选择Batch_size数量的样本进行训练
+batch_size = 320     #每一次任意选择Batch_size数量的样本进行训练
 lossi = []          #记录，每一轮学习，输出的loss
 ud = []             
 #ud记录的是
@@ -255,10 +256,66 @@ for i in range(max_steps):
 #     列表I内储存的元素是19个参数tensor中每一个参数tensor的(lr*p.grad).std() / p.data.std()).log10()值
 #   4.所以ud的维度是i*19。i表示iteration的次数，也就是训练次数
     ud.append([((lr*p.grad).std() / p.data.std()).log10().item() for p in parameters])
+  if i % 100 ==1:
+    print(loss)
 
-  if i >= 1000:
-    break # AFTER_DEBUG: would take out obviously to run full optimization
 
+#==============================用训练好的模型采样：生成名字=========================
+def use(number_of_names=10):
+
+  #（1）先把所有的BatchNorm层切成eval模式：
+  #   生成名字时是一个字一个字来的，每次前向传播只有1个样本，BN已经没有“batch”可以统计了，
+  #   所以它必须退回去用训练过程中累积的running_mean和running_var。
+  #   注意：只有BatchNorm1d才有training属性，Linear和Tanh没有，所以要用isinstance筛一下
+  for layer in layers:
+    if isinstance(layer, BatchNorm1d):
+      layer.training = False
+
+  #（2）固定一个采样专用的随机种子：这样每次运行生成的名字都一样，方便对比不同模型的采样效果
+  #   注意不要复用训练循环里的g，否则会打乱训练时minibatch的随机序列
+  sample_generator = torch.Generator().manual_seed(2147483647 + 10)
+
+  #（3）生成number_of_names个名字，外层循环每转一圈生成一个名字
+  for name_index in range(number_of_names):
+
+    #（4）每个名字都从“名字的开头”开始：上下文初始化为block_size个'.'（'.'的编号是0）
+    context = [0] * block_size
+    generated_characters = []
+
+    while True:
+      #（5）前向传播：把当前的上下文喂进网络，得到27个字符各自的logits
+      emb = C[torch.tensor([context])]        # (1, block_size, n_embd)
+      x = emb.view(emb.shape[0], -1)          # 拼接成 (1, block_size*n_embd)
+      for layer in layers:
+        x = layer(x)
+      logits = x                              # (1, vocab_size)
+
+      #（6）把logits变成概率分布，然后照着概率“掷骰子”抽一个字符
+      #   这里必须用multinomial采样，不能用argmax：argmax每次都只会选出同一个最可能的字符，
+      #   而“最可能的字符”又会被接回上下文，于是同一个上下文永远只能生成同一个名字，结果就是不停重复
+      probs = F.softmax(logits, dim=1)
+      character_index = torch.multinomial(probs, num_samples=1, generator=sample_generator).item()
+
+      #（7）抽到'.'（编号是0）就表示这个名字结束了，退出循环
+      #   注意这里是先判断再append，所以打印出来的名字里不会带'.'
+      if character_index == 0:
+        break
+
+      #（8）把抽到的字符记录进结果，并且更新上下文：丢掉最老的一个字符，把新字符接到末尾
+      generated_characters.append(itos[character_index])
+      context = context[1:] + [character_index]
+
+    #（9）把字符列表拼成字符串，就得到了一个名字
+    print(''.join(generated_characters))
+
+  #（10）十个名字都生成完了，把BatchNorm层改回training模式，
+  #   否则会影响到后面依赖BN训练行为的代码（比如后面那些统计实验、调试用的采样）
+  for layer in layers:
+    if isinstance(layer, BatchNorm1d):
+      layer.training = True
+  
+use()
+sys.exit(0)
 
 
 
@@ -393,6 +450,8 @@ for layer in layers:
   layer.training = False
 split_loss('train')
 split_loss('val')
+
+
 
 
 # sample from the model
